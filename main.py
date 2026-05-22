@@ -85,19 +85,23 @@ bc_inlet_pressure = dolfinx.fem.dirichletbc(applied_pressure_func, inlet_p_dofs)
 bc_wall_no_slip = dolfinx.fem.dirichletbc(np.zeros(mesh.geometry.dim, dtype=PETSc.ScalarType), wall_v_dofs, V_velocity)
 bcs = [bc_inlet_pressure, bc_wall_no_slip]
 
-# 5. Formulate Non-Linear Variational Forms
-rho = dolfinx.fem.Constant(mesh, PETSc.ScalarType(1.0))
-mu = dolfinx.fem.Constant(mesh, PETSc.ScalarType(0.01))
+# 5. Formulate Non-Linear Variational Forms (Slightly Compressible Navier-Stokes)
+rho = dolfinx.fem.Constant(mesh, PETSc.ScalarType(1.0))  # Fluid Density
+mu = dolfinx.fem.Constant(mesh, PETSc.ScalarType(0.01))  # Fluid Viscosity
+beta = dolfinx.fem.Constant(mesh,
+                            PETSc.ScalarType(0.1))  # Compressibility factor to hold pressure values chronologically
 
 dx = ufl.dx
 grad, div, inner, sym = ufl.grad, ufl.div, ufl.inner, ufl.sym
 
+# FIX: Added 'beta * p_test * ((p - p_old) / dt) * dx' to couple pressure to previous history step matrices
 F_fluid = (
         rho * inner((v - v_old) / dt, v_test) * dx
         + rho * inner(grad(v) * v, v_test) * dx
         + 2.0 * mu * inner(sym(grad(v)), sym(grad(v_test))) * dx
         - p * div(v_test) * dx
         + p_test * div(v) * dx
+        + beta * p_test * ((p - p_old) / dt) * dx
 )
 
 # 6. Analytical Jacobian derivative and explicit form compilation
@@ -116,7 +120,6 @@ class FSIProblem:
         self.form = lambda solver_obj: None
 
     def F(self, x, b_vec):
-        # FIX: Typo removed (unmatched parenthesis fixed)
         indices = np.arange(len(u.x.array), dtype=np.int32)
         u.x.petsc_vec.setValues(indices, x.getArray())
         u.x.petsc_vec.assemble()
@@ -162,6 +165,7 @@ with dolfinx.io.XDMFFile(mesh.comm, xdmf_path, "w") as xdmf:
     for step in range(num_steps):
         t += dt
 
+        # Periodic sinusoidal wave pulse hitting the inlet boundary
         current_load = 25.0 * np.sin(np.pi * t / T)
         applied_pressure_func.x.array[:] = current_load
 
